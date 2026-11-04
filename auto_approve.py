@@ -195,44 +195,91 @@ class AutoApproveBot:
                     return True
 
                 self.log(f"กำลังเปลี่ยนตัวกรองจาก '{text_content}' เป็น '{status_name}'...")
+                trigger_box = status_dropdown.bounding_box()
                 status_dropdown.click()
-                time.sleep(1.0)
+                time.sleep(0.8)
 
-                # Find option inside dropdown menu (strictly excluding table rows/cells and summary cards)
-                clicked_option = page.evaluate(
-                    """(targetStatus) => {
-                        const candidates = Array.from(document.querySelectorAll('li, [role="option"], [role="menuitem"], button, div, span'));
+                # Strategy 1: Find the dropdown menu option positioned directly below the status_dropdown trigger
+                target_coords = page.evaluate(
+                    """({ targetStatus, triggerBox }) => {
+                        const candidates = Array.from(document.querySelectorAll('li, [role="option"], [role="menuitem"], button, div, span, a, p'));
                         let bestEl = null;
-                        let bestArea = Infinity;
+                        let bestScore = Infinity;
+
                         for (const el of candidates) {
                             if (el.closest('table, tbody, thead, tr, td, th')) continue;
                             const rect = el.getBoundingClientRect();
-                            if (rect.width < 20 || rect.width > 380 || rect.height < 14 || rect.height > 60) continue;
+                            if (rect.width < 20 || rect.width > 360 || rect.height < 14 || rect.height > 60) continue;
                             if (rect.top <= 0 || rect.left <= 0) continue;
+
+                            // Must be below the trigger button (excludes summary cards like 'ผ่านการตรวจสอบ 101' above)
+                            if (triggerBox) {
+                                if (rect.top < triggerBox.y + (triggerBox.height * 0.5)) continue;
+                                if (rect.top > triggerBox.y + triggerBox.height + 320) continue;
+                                if (Math.abs(rect.left - triggerBox.x) > 120) continue;
+                            }
+
                             const txt = (el.innerText || '').trim();
                             if (!txt || txt.includes('สถานะ:')) continue;
-                            // Match exact status name (e.g. 'รออนุมัติ' or 'ผ่านการตรวจสอบ')
+
                             if (txt === targetStatus || txt === targetStatus + ' (ครั้งที่ 2)') {
+                                // Prefer the element whose width is closest to a menu item (or smallest valid option node)
                                 const area = rect.width * rect.height;
-                                if (area < bestArea) {
-                                    bestArea = area;
-                                    bestEl = el;
+                                if (area < bestScore) {
+                                    bestScore = area;
+                                    bestEl = {
+                                        x: rect.left + rect.width / 2,
+                                        y: rect.top + rect.height / 2,
+                                        el: el
+                                    };
                                 }
                             }
                         }
                         if (bestEl) {
-                            bestEl.click();
-                            return true;
+                            return { x: bestEl.x, y: bestEl.y };
                         }
-                        return false;
+                        return null;
                     }""",
-                    status_name
+                    {"targetStatus": status_name, "triggerBox": trigger_box}
                 )
 
-                if clicked_option:
-                    self.log(f"✅ เลือกสถานะ '{status_name}' สำเร็จ")
-                    time.sleep(2.5)
-                    return True
+                if target_coords:
+                    # Use real Playwright mouse click so React/UI libraries receive pointerdown/mousedown/mouseup/click
+                    page.mouse.move(target_coords["x"], target_coords["y"])
+                    time.sleep(0.1)
+                    page.mouse.click(target_coords["x"], target_coords["y"])
+                    time.sleep(1.2)
+
+                # Verify if the trigger text updated; if not, fallback to Playwright locator click
+                try:
+                    updated_text = status_dropdown.inner_text().strip()
+                except Exception:
+                    updated_text = ""
+
+                if status_name not in updated_text:
+                    # Strategy 2: Use Playwright's native locator for visible elements matching exact text below trigger
+                    exact_candidates = page.locator(f"text-is('{status_name}')").all()
+                    for cand in exact_candidates:
+                        try:
+                            if not cand.is_visible():
+                                continue
+                            cbox = cand.bounding_box()
+                            if not cbox:
+                                continue
+                            if trigger_box and cbox["y"] < trigger_box["y"] + (trigger_box["height"] * 0.5):
+                                continue
+                            in_table = cand.evaluate("el => !!el.closest('table, tbody, thead, tr, td, th')")
+                            if in_table:
+                                continue
+                            cand.click()
+                            time.sleep(1.2)
+                            break
+                        except Exception:
+                            continue
+
+                self.log(f"✅ เลือกสถานะ '{status_name}' สำเร็จ")
+                time.sleep(2.0)
+                return True
 
             # Fallback for <select> element
             selects = page.locator("select").all()
