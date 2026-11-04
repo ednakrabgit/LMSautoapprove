@@ -1,0 +1,24 @@
+# Virtual environments & portable runtimes
+.venv/
+.venv_mac/
+python_runtime/
+ms-playwright/
+
+# Browser session data & cookies
+browser_profile/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE & OS files
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local screenshots with sensitive data
+1.png
+2.png
+3.png
+4.png
